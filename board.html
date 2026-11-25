@@ -1,0 +1,141 @@
+<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Project Board</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header id="nav"></header>
+<main>
+  <div class="box">
+    <h2 id="ptitle">Loading...</h2>
+    <p id="pdesc"></p>
+    <div class="members" id="members" style="margin:10px 0"></div>
+    <div class="row" id="addMember" style="display:none">
+      <div><input id="memberEmail" placeholder="Add member by email"></div>
+      <button class="btn" onclick="addMember()">Add Member</button>
+    </div>
+  </div>
+
+  <div class="box">
+    <h3>➕ New task</h3>
+    <div class="row">
+      <div><input id="ttitle" placeholder="Task title"></div>
+      <div><select id="tassign"></select></div>
+      <button class="btn" onclick="addTask()">Add Task</button>
+    </div>
+  </div>
+
+  <div class="board" id="board"></div>
+</main>
+
+<!-- Task details popup -->
+<div class="modalbg" id="modalbg" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <h3>Task Details</h3>
+    <label>Title</label><input id="mtitle">
+    <label>Description</label><textarea id="mdesc" rows="3"></textarea>
+    <div class="row">
+      <div><label>Assigned to</label><select id="massign"></select></div>
+      <div><label>Status</label>
+        <select id="mstatus"><option value="todo">To Do</option><option value="doing">In Progress</option><option value="done">Done</option></select></div>
+    </div>
+    <button class="btn" onclick="saveTask()">Save</button>
+    <button class="btn red" onclick="deleteTask()">Delete</button>
+    <button class="btn gray" onclick="closeModal()">Close</button>
+    <hr style="margin:16px 0">
+    <h3>💬 Comments</h3>
+    <div id="comments"></div>
+    <input id="cinput" placeholder="Write a comment and press Enter" onkeydown="if(event.key==='Enter')addComment()">
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+const pid = new URLSearchParams(location.search).get('id');
+const COLS = [['todo', '📝 To Do'], ['doing', '🚧 In Progress'], ['done', '✅ Done']];
+let data = null, openId = null;
+
+async function load() {
+  try { data = await api('/api/projects/' + pid); }
+  catch (e) { document.querySelector('main').innerHTML = `<div class="box">${esc(e.message)}. <a href="/">Back</a></div>`; return; }
+  ptitle.textContent = data.project.name;
+  pdesc.textContent = data.project.description;
+  members.innerHTML = '👥 ' + data.members.map(m => `<span>${esc(m.name)}</span>`).join('');
+  addMember.style.display = data.project.owner_id === ME.id ? 'flex' : 'none';
+  const opts = '<option value="">Unassigned</option>' + data.members.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('');
+  tassign.innerHTML = opts;
+  const cur = massign.value; massign.innerHTML = opts; massign.value = cur;
+  drawBoard();
+}
+
+function drawBoard() {
+  board.innerHTML = COLS.map(([st, label]) => {
+    const tasks = data.tasks.filter(t => t.status === st);
+    return `<div class="col" ondragover="event.preventDefault();this.classList.add('over')"
+                 ondragleave="this.classList.remove('over')" ondrop="drop(event,'${st}')">
+      <h3>${label} (${tasks.length})</h3>
+      ${tasks.map(t => `<div class="task" draggable="true" ondragstart="event.dataTransfer.setData('text','${t.id}')" onclick="openTask(${t.id})">
+        <b>${esc(t.title)}</b>
+        <small><span>👤 ${esc(t.assignee_name) || 'Unassigned'}</span><span>💬 ${t.comment_count}</span></small>
+      </div>`).join('')}
+    </div>`;
+  }).join('');
+}
+
+async function drop(e, status) {            // drag & drop a card to another column
+  e.preventDefault();
+  try { await api('/api/tasks/' + e.dataTransfer.getData('text'), 'PUT', { status }); load(); }
+  catch (err) { alert(err.message); }
+}
+
+async function addTask() {
+  try {
+    await api(`/api/projects/${pid}/tasks`, 'POST', { title: ttitle.value, assigned_to: tassign.value });
+    ttitle.value = ''; load();
+  } catch (e) { alert(e.message); }
+}
+
+async function addMember() {
+  try { await api(`/api/projects/${pid}/members`, 'POST', { email: memberEmail.value }); memberEmail.value = ''; load(); }
+  catch (e) { alert(e.message); }
+}
+
+// ----- Task popup -----
+function openTask(id) {
+  const t = data.tasks.find(x => x.id === id);
+  openId = id;
+  mtitle.value = t.title; mdesc.value = t.description;
+  massign.value = t.assigned_to || ''; mstatus.value = t.status;
+  modalbg.style.display = 'flex';
+  loadComments();
+}
+function closeModal() { modalbg.style.display = 'none'; openId = null; }
+
+async function saveTask() {
+  try {
+    await api('/api/tasks/' + openId, 'PUT', { title: mtitle.value, description: mdesc.value, assigned_to: massign.value, status: mstatus.value });
+    closeModal(); load();
+  } catch (e) { alert(e.message); }
+}
+async function deleteTask() {
+  if (!confirm('Delete this task?')) return;
+  await api('/api/tasks/' + openId, 'DELETE'); closeModal(); load();
+}
+
+async function loadComments() {
+  if (!openId) return;
+  const list = await api(`/api/tasks/${openId}/comments`);
+  comments.innerHTML = list.length
+    ? list.map(c => `<div class="comment"><small><b>${esc(c.name)}</b> · ${c.created_at}</small>${esc(c.content)}</div>`).join('')
+    : '<small>No comments yet</small>';
+}
+async function addComment() {
+  try { await api(`/api/tasks/${openId}/comments`, 'POST', { content: cinput.value }); cinput.value = ''; }
+  catch (e) { alert(e.message); }
+}
+
+// ----- Real-time: other team members' changes appear instantly -----
+window.addEventListener('ws', e => {
+  if (e.detail.type === 'project_update' && String(e.detail.projectId) === pid) { load(); loadComments(); }
+});
+
+initPage().then(ok => ok && load());
+</script>
+</body></html>
